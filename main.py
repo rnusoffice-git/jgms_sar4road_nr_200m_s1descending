@@ -33,16 +33,52 @@ def ensure_file_exists(filename: str):
 
 @app.on_event("startup")
 def startup_event():
-    """Pre-downloads essential metadata, reference points, and time-series parquet on startup."""
+    """Pre-downloads essential datasets and prints schemas to logs for verification."""
     print("Pre-downloading essential datasets...")
     ensure_file_exists("metadata.duckdb")
     ensure_file_exists("reference_points.geojson")
     ensure_file_exists("timeseries.parquet")
+    
+    # Log metadata and parquet column schemas
+    try:
+        con = duckdb.connect("metadata.duckdb", read_only=True)
+        print("metadata.duckdb schema:", con.execute("DESCRIBE metadata").fetchall())
+        con.close()
+
+        ts_con = duckdb.connect()
+        print("timeseries.parquet schema:", ts_con.execute("DESCRIBE SELECT * FROM read_parquet('timeseries.parquet')").fetchall())
+        ts_con.close()
+    except Exception as e:
+        print("Startup schema inspection warning:", e)
+
     print("Backend ready!")
 
 @app.get("/")
 def root():
     return {"status": "sar4road_dashboard Private Hugging Face API Online"}
+
+@app.get("/debug/schema")
+def debug_schema():
+    """Diagnostic endpoint to inspect table columns and sample rows."""
+    ensure_file_exists("metadata.duckdb")
+    ensure_file_exists("timeseries.parquet")
+    
+    m_con = duckdb.connect("metadata.duckdb", read_only=True)
+    m_cols = [r[0] for r in m_con.execute("DESCRIBE metadata").fetchall()]
+    m_sample = m_con.execute("SELECT * FROM metadata LIMIT 1").fetchone()
+    m_con.close()
+
+    ts_con = duckdb.connect()
+    ts_cols = [r[0] for r in ts_con.execute("DESCRIBE SELECT * FROM read_parquet('timeseries.parquet')").fetchall()]
+    ts_sample = ts_con.execute("SELECT * FROM read_parquet('timeseries.parquet') LIMIT 1").fetchone()
+    ts_con.close()
+
+    return {
+        "metadata_columns": m_cols,
+        "metadata_sample": m_sample,
+        "timeseries_columns": ts_cols,
+        "timeseries_sample": ts_sample
+    }
 
 @app.get("/geojson/reference_points.geojson")
 def get_ref_points():
@@ -58,7 +94,6 @@ def get_insar_map_points(
     limit: int = Query(8000)
 ):
     ensure_file_exists("metadata.duckdb")
-
     con = duckdb.connect("metadata.duckdb", read_only=True)
 
     if None not in (min_lat, max_lat, min_lon, max_lon):
@@ -95,21 +130,25 @@ def get_insar_map_points(
 
 @app.get("/point/{global_id}")
 def get_point_details(global_id: str):
-    """Fetches metadata and time-series displacement data safely from local cached files."""
+    """
+    Fetches metadata and time-series displacement using flexible type matching
+    to resolve integer vs float vs string global_id discrepancies.
+    """
     ensure_file_exists("metadata.duckdb")
     ensure_file_exists("timeseries.parquet")
 
+    clean_gid = str(global_id).strip().rstrip('.0')
     metadata = {}
     dates = []
     displacement = []
 
-    # 1. Fetch Metadata from DuckDB
+    # 1. Fetch Metadata
     try:
         meta_con = duckdb.connect("metadata.duckdb", read_only=True)
-        meta_res = meta_con.execute(
-            "SELECT * FROM metadata WHERE CAST(global_id AS VARCHAR) = CAST(? AS VARCHAR)", 
-            [str(global_id)]
-        ).fetchone()
+        meta_res = meta_con.execute("""
+            SELECT * FROM metadata 
+            WHERE REPLACE(CAST(global_id AS VARCHAR), '.0', '') = ?
+        """, [clean_gid]).fetchone()
 
         if meta_res:
             cols = [desc[0].lower() for desc in meta_con.description]
@@ -118,15 +157,24 @@ def get_point_details(global_id: str):
     except Exception as e:
         print(f"Error fetching metadata for global_id {global_id}: {e}")
 
-    # 2. Fetch Time Series from Local Parquet File (Fast Columnar Scan)
+    # 2. Fetch Time Series Data from Parquet
     try:
         ts_con = duckdb.connect()
         ts_res = ts_con.execute("""
             SELECT CAST(date AS VARCHAR) as date_str, displacement 
             FROM read_parquet('timeseries.parquet') 
-            WHERE CAST(global_id AS VARCHAR) = CAST(? AS VARCHAR)
+            WHERE REPLACE(CAST(global_id AS VARCHAR), '.0', '') = ?
             ORDER BY date ASC
-        """, [str(global_id)]).fetchall()
+        """, [clean_gid]).fetchall()
+
+        # Fallback query using 'code' column if global_id lookup returns 0 rows
+        if not ts_res and metadata.get('code'):
+            ts_res = ts_con.execute("""
+                SELECT CAST(date AS VARCHAR) as date_str, displacement 
+                FROM read_parquet('timeseries.parquet') 
+                WHERE CAST(code AS VARCHAR) = ?
+                ORDER BY date ASC
+            """, [str(metadata['code'])]).fetchall()
 
         dates = [row[0] for row in ts_res]
         displacement = [float(row[1]) if row[1] is not None else 0.0 for row in ts_res]
