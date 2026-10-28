@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from huggingface_hub import hf_hub_download
@@ -51,28 +51,30 @@ def get_ref_points():
 @app.get("/geojson/insar_map_points.geojson")
 def get_insar_map_points():
     """
-    Dynamically generates map point GeoJSON from metadata.duckdb on the fly.
-    Bypasses downloading/loading the 935 MB GeoJSON file to stay within Render's 512 MB RAM limit.
+    Constructs GeoJSON directly in DuckDB's C++ engine to eliminate 
+    Python dictionary allocation overhead and prevent 502 OOM crashes on Render.
     """
     con = duckdb.connect("metadata.duckdb", read_only=True)
-    rows = con.execute("SELECT global_id, latitude, longitude, vel FROM metadata").fetchall()
+    
+    query = """
+    SELECT '{"type":"FeatureCollection","features":[' || 
+           string_agg(
+               '{"type":"Feature","geometry":{"type":"Point","coordinates":[' || 
+               CAST(longitude AS VARCHAR) || ',' || CAST(latitude AS VARCHAR) || 
+               ']},"properties":{"global_id":"' || CAST(global_id AS VARCHAR) || 
+               '","velocity":' || COALESCE(CAST(vel AS VARCHAR), '0.0') || '}}', 
+               ','
+           ) || ']}' 
+    FROM metadata
+    """
+    
+    json_str = con.execute(query).fetchone()[0]
     con.close()
 
-    features = [
-        {
-            "type": "Feature",
-            "geometry": {
-                "type": "Point",
-                "coordinates": [r[2], r[1]]  # [longitude, latitude]
-            },
-            "properties": {
-                "global_id": str(r[0]),
-                "velocity": float(r[3]) if r[3] is not None else 0.0
-            }
-        }
-        for r in rows
-    ]
-    return {"type": "FeatureCollection", "features": features}
+    if not json_str:
+        json_str = '{"type":"FeatureCollection","features":[]}'
+
+    return Response(content=json_str, media_type="application/json")
 
 @app.get("/point/{global_id}")
 def get_point_details(global_id: str):
