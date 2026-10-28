@@ -265,7 +265,6 @@
       });
     },
     onEachFeature: (feature, layer) => {
-      // Hover animation
       layer.on('mouseover', function () {
         this.setStyle({ weight: 2, radius: 8 });
       });
@@ -276,7 +275,7 @@
         this.setStyle({ weight: 0.5, radius: isVisible ? 6 : 0 });
       });
 
-      // Updated Point Click Handler
+      // Point Click Handler
       layer.on('click', async (e) => {
         L.DomEvent.stopPropagation(e);
 
@@ -296,7 +295,7 @@
           activeData = await res.json();
           const m = activeData.metadata || {};
 
-          // Flexible fallback for lowercase or uppercase metadata keys
+          // Flexible metadata value parsing
           document.getElementById('m_fid').innerText = m.fid ?? m.FID ?? '-';
           document.getElementById('m_code').innerText = m.code ?? m.CODE ?? '-';
 
@@ -305,29 +304,38 @@
           document.getElementById('m_coords').innerText = (lat !== undefined && lon !== undefined) ? `${Number(lat).toFixed(3)}, ${Number(lon).toFixed(3)}` : '-';
 
           const h = m.height ?? m.HEIGHT;
-          document.getElementById('m_height').innerText = h !== undefined ? `${h} m` : '-';
+          document.getElementById('m_height').innerText = h !== undefined ? `${Number(h).toFixed(1)} m` : '-';
 
           const v = m.vel ?? m.VEL ?? m.velocity;
-          document.getElementById('m_vel').innerText = v !== undefined ? `${v} mm/yr` : '-';
+          document.getElementById('m_vel').innerText = v !== undefined ? `${Number(v).toFixed(2)} mm/yr` : '-';
 
-          document.getElementById('m_coherence').innerText = m.coherence ?? m.COHERENCE ?? '-';
+          const coh = m.coherence ?? m.COHERENCE;
+          document.getElementById('m_coherence').innerText = coh !== undefined ? Number(coh).toFixed(3) : '-';
 
           const inc = m.inc_angle ?? m.INC_ANGLE;
-          document.getElementById('m_inc').innerText = inc !== undefined ? `${inc}°` : '-';
+          document.getElementById('m_inc').innerText = inc !== undefined ? `${Number(inc).toFixed(2)}°` : '-';
 
           const heading = m.heading ?? m.HEADING;
-          document.getElementById('m_heading').innerText = heading !== undefined ? `${heading}°` : '-';
+          document.getElementById('m_heading').innerText = heading !== undefined ? `${Number(heading).toFixed(2)}°` : '-';
 
           const rlat = m.ref_lat ?? m.REF_LAT;
           const rlon = m.ref_lon ?? m.REF_LON;
           document.getElementById('m_ref').innerText = (rlat !== undefined && rlon !== undefined) ? `${Number(rlat).toFixed(3)}, ${Number(rlon).toFixed(3)}` : '-';
 
-          // Update Time Series Chart
-          tsChart.data.labels = activeData.dates || [];
-          tsChart.data.datasets[0].data = activeData.displacement || [];
-          tsChart.update();
-
-          document.getElementById('dlBtn').disabled = !(activeData.dates && activeData.dates.length > 0);
+          // Render Time Series Chart
+          if (activeData.dates && activeData.dates.length > 0) {
+            tsChart.data.labels = activeData.dates;
+            tsChart.data.datasets[0].data = activeData.displacement;
+            tsChart.data.datasets[0].label = `Displacement (mm) [${activeData.dates.length} epochs]`;
+            tsChart.update();
+            document.getElementById('dlBtn').disabled = false;
+          } else {
+            tsChart.data.labels = [];
+            tsChart.data.datasets[0].data = [];
+            tsChart.data.datasets[0].label = 'No Time Series Data Available';
+            tsChart.update();
+            document.getElementById('dlBtn').disabled = true;
+          }
         } catch (err) {
           console.error("Error fetching point details:", err);
           document.getElementById('m_fid').innerText = "Error";
@@ -337,7 +345,7 @@
     }
   }).addTo(map);
 
-  // Dynamic Viewport Point Fetcher (Bounding Box)
+  // Dynamic Viewport Point Fetcher
   async function loadVisiblePoints() {
     if (isFetchingPoints) return;
     isFetchingPoints = true;
@@ -364,24 +372,21 @@
     }
   }
 
-  // Fetch points when panning or zooming completes
   map.on('moveend', loadVisiblePoints);
-
-  // Initial load
   loadVisiblePoints();
 
   // Download CSV
   function downloadCSV() {
-    if (!activeData) return;
-    const m = activeData.metadata;
+    if (!activeData || !activeData.dates) return;
+    const m = activeData.metadata || {};
     let csv = "data:text/csv;charset=utf-8,";
-    csv += `# METADATA INFORMATION\nFID,${m.fid ?? m.FID}\nCODE,${m.code ?? m.CODE}\nLatitude,${m.latitude ?? m.LATITUDE}\nLongitude,${m.longitude ?? m.LONGITUDE}\nHeight (m),${m.height ?? m.HEIGHT}\nVelocity (mm/yr),${m.vel ?? m.VEL}\nCoherence,${m.coherence ?? m.COHERENCE}\nIncidence Angle (deg),${m.inc_angle ?? m.INC_ANGLE}\nAzimuth Angle (deg),${m.az_angle ?? m.AZ_ANGLE}\nHeading (deg),${m.heading ?? m.HEADING}\nReference Lat,${m.ref_lat ?? m.REF_LAT}\nReference Lon,${m.ref_lon ?? m.REF_LON}\nFile Name,${m.file_name ?? m.FILE_NAME}\n\n`;
+    csv += `# METADATA INFORMATION\nFID,${m.fid ?? m.FID ?? ''}\nCODE,${m.code ?? m.CODE ?? ''}\nLatitude,${m.latitude ?? m.LATITUDE ?? ''}\nLongitude,${m.longitude ?? m.LONGITUDE ?? ''}\nHeight (m),${m.height ?? m.HEIGHT ?? ''}\nVelocity (mm/yr),${m.vel ?? m.VEL ?? ''}\nCoherence,${m.coherence ?? m.COHERENCE ?? ''}\nIncidence Angle (deg),${m.inc_angle ?? m.INC_ANGLE ?? ''}\nAzimuth Angle (deg),${m.az_angle ?? m.AZ_ANGLE ?? ''}\nHeading (deg),${m.heading ?? m.HEADING ?? ''}\nReference Lat,${m.ref_lat ?? m.REF_LAT ?? ''}\nReference Lon,${m.ref_lon ?? m.REF_LON ?? ''}\nFile Name,${m.file_name ?? m.FILE_NAME ?? ''}\n\n`;
     csv += `# TIME SERIES DATA\nDate,Displacement_mm\n`;
     activeData.dates.forEach((d, i) => { csv += `${d},${activeData.displacement[i]}\n`; });
 
     const link = document.createElement("a");
     link.href = encodeURI(csv);
-    link.download = `InSAR_${m.code ?? m.CODE}_FID_${m.fid ?? m.FID}.csv`;
+    link.download = `InSAR_${m.code ?? m.CODE ?? 'point'}_FID_${m.fid ?? m.FID ?? 'data'}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

@@ -19,6 +19,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 HF_REPO_ID = os.getenv("HF_REPO_ID", "rnus/jgms_sar4road_nat_200m_s1descending")
 
 def ensure_file_exists(filename: str):
+    """Downloads required dataset files from Hugging Face repo if not cached locally."""
     if not os.path.exists(filename):
         print(f"Downloading {filename} from Hugging Face repo '{HF_REPO_ID}'...")
         hf_hub_download(
@@ -32,9 +33,11 @@ def ensure_file_exists(filename: str):
 
 @app.on_event("startup")
 def startup_event():
+    """Pre-downloads essential metadata, reference points, and time-series parquet on startup."""
     print("Pre-downloading essential datasets...")
     ensure_file_exists("metadata.duckdb")
     ensure_file_exists("reference_points.geojson")
+    ensure_file_exists("timeseries.parquet")
     print("Backend ready!")
 
 @app.get("/")
@@ -92,46 +95,41 @@ def get_insar_map_points(
 
 @app.get("/point/{global_id}")
 def get_point_details(global_id: str):
-    """Fetches metadata and time-series displacement data safely with error handling."""
+    """Fetches metadata and time-series displacement data safely from local cached files."""
     ensure_file_exists("metadata.duckdb")
-    
+    ensure_file_exists("timeseries.parquet")
+
     metadata = {}
     dates = []
     displacement = []
 
-    # 1. Read Metadata
+    # 1. Fetch Metadata from DuckDB
     try:
         meta_con = duckdb.connect("metadata.duckdb", read_only=True)
         meta_res = meta_con.execute(
-            "SELECT * FROM metadata WHERE global_id = ? OR CAST(global_id AS VARCHAR) = ?", 
-            [global_id, str(global_id)]
+            "SELECT * FROM metadata WHERE CAST(global_id AS VARCHAR) = CAST(? AS VARCHAR)", 
+            [str(global_id)]
         ).fetchone()
-        
+
         if meta_res:
-            # Normalize column names to lowercase
             cols = [desc[0].lower() for desc in meta_con.description]
             metadata = dict(zip(cols, meta_res))
         meta_con.close()
     except Exception as e:
         print(f"Error fetching metadata for global_id {global_id}: {e}")
 
-    # 2. Read Time Series Parquet
+    # 2. Fetch Time Series from Local Parquet File (Fast Columnar Scan)
     try:
         ts_con = duckdb.connect()
-        ts_con.execute("INSTALL httpfs; LOAD httpfs;")
-        if HF_TOKEN:
-            ts_con.execute(f"SET http_headers = map(['Authorization'], ['Bearer {HF_TOKEN}']);")
-        
-        parquet_url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/timeseries.parquet"
-        ts_res = ts_con.execute(f"""
-            SELECT strftime(date, '%Y-%m-%d') as date, displacement 
-            FROM read_parquet('{parquet_url}') 
-            WHERE global_id = ? OR CAST(global_id AS VARCHAR) = ?
+        ts_res = ts_con.execute("""
+            SELECT CAST(date AS VARCHAR) as date_str, displacement 
+            FROM read_parquet('timeseries.parquet') 
+            WHERE CAST(global_id AS VARCHAR) = CAST(? AS VARCHAR)
             ORDER BY date ASC
-        """, [global_id, str(global_id)]).fetchall()
-        
+        """, [str(global_id)]).fetchall()
+
         dates = [row[0] for row in ts_res]
-        displacement = [row[1] for row in ts_res]
+        displacement = [float(row[1]) if row[1] is not None else 0.0 for row in ts_res]
         ts_con.close()
     except Exception as e:
         print(f"Error fetching time-series for global_id {global_id}: {e}")
