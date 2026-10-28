@@ -115,8 +115,9 @@
   let pointLayer = null;
   let searchMarker = null;
   let userLocationMarker = null;
-  const API_BASE_URL = "https://jgms-sar4road-national-road-s1descending.onrender.com"; // Replace with live Render URL after Phase 6
+  let isFetchingPoints = false;
 
+  const API_BASE_URL = "https://jgms-sar4road-national-road-s1descending.onrender.com";
   const activeCategories = { sub: true, mod_sub: true, mod_up: true, up: true };
 
   // --- Dynamic description.txt Modal Fetch ---
@@ -192,6 +193,11 @@
     return vel < -15 ? '#d73027' : vel < 0 ? '#fdae61' : vel < 15 ? '#ffffbf' : '#1a9850';
   }
 
+  function getPointVelocity(feature) {
+    if (!feature || !feature.properties) return 0;
+    return feature.properties.velocity !== undefined ? feature.properties.velocity : (feature.properties.vel !== undefined ? feature.properties.vel : 0);
+  }
+
   // --- Add Interactive Legend ---
   const legend = L.control({ position: 'bottomright' });
   legend.onAdd = function () {
@@ -217,57 +223,105 @@
 
     if (pointLayer) {
       pointLayer.setStyle(feature => {
-        const cat = getCategoryKey(feature.properties.VEL);
+        const vel = getPointVelocity(feature);
+        const cat = getCategoryKey(vel);
         const isVisible = activeCategories[cat];
         return { opacity: isVisible ? 1 : 0, fillOpacity: isVisible ? 0.85 : 0, radius: isVisible ? 3 : 0 };
       });
     }
   }
 
-  // Load Reference Markers
+  // Load Reference Markers (static reference dataset)
   fetch(`${API_BASE_URL}/geojson/reference_points.geojson`)
     .then(res => res.json())
     .then(data => {
       L.geoJSON(data, {
         pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 7, fillColor: '#0055ff', color: '#fff', weight: 2, fillOpacity: 1 })
       }).addTo(map);
-    });
+    })
+    .catch(err => console.error("Error fetching reference points:", err));
 
-  // Load InSAR Points
-  fetch(`${API_BASE_URL}/geojson/insar_map_points.geojson`)
-    .then(res => res.json())
-    .then(data => {
-      pointLayer = L.geoJSON(data, {
-        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 3, fillColor: getColor(feature.properties.VEL), color: '#000', weight: 0.1, fillOpacity: 0.85 }),
-        onEachFeature: (feature, layer) => {
-          layer.on('click', async () => {
-            const cat = getCategoryKey(feature.properties.VEL);
-            if (!activeCategories[cat]) return;
+  // Initialize GeoJSON layer for displacement points
+  pointLayer = L.geoJSON(null, {
+    pointToLayer: (feature, latlng) => {
+      const vel = getPointVelocity(feature);
+      const cat = getCategoryKey(vel);
+      const isVisible = activeCategories[cat];
+      return L.circleMarker(latlng, {
+        radius: isVisible ? 3 : 0,
+        fillColor: getColor(vel),
+        color: '#000',
+        weight: 0.1,
+        opacity: isVisible ? 1 : 0,
+        fillOpacity: isVisible ? 0.85 : 0
+      });
+    },
+    onEachFeature: (feature, layer) => {
+      layer.on('click', async () => {
+        const vel = getPointVelocity(feature);
+        const cat = getCategoryKey(vel);
+        if (!activeCategories[cat]) return;
 
-            const gid = feature.properties.global_id;
-            const res = await fetch(`${API_BASE_URL}/point/${gid}`);
-            activeData = await res.json();
-            const m = activeData.metadata;
+        const gid = feature.properties.global_id;
+        try {
+          const res = await fetch(`${API_BASE_URL}/point/${gid}`);
+          activeData = await res.json();
+          const m = activeData.metadata || {};
 
-            document.getElementById('m_fid').innerText = m.fid;
-            document.getElementById('m_code').innerText = m.code;
-            document.getElementById('m_coords').innerText = `${m.latitude.toFixed(3)}, ${m.longitude.toFixed(3)}`;
-            document.getElementById('m_height').innerText = `${m.height} m`;
-            document.getElementById('m_vel').innerText = `${m.vel} mm/yr`;
-            document.getElementById('m_coherence').innerText = m.coherence;
-            document.getElementById('m_inc').innerText = `${m.inc_angle}°`;
-            document.getElementById('m_heading').innerText = `${m.heading}°`;
-            document.getElementById('m_ref').innerText = `${m.ref_lat.toFixed(3)}, ${m.ref_lon.toFixed(3)}`;
+          document.getElementById('m_fid').innerText = m.fid ?? '-';
+          document.getElementById('m_code').innerText = m.code ?? '-';
+          document.getElementById('m_coords').innerText = (m.latitude !== undefined && m.longitude !== undefined) ? `${m.latitude.toFixed(3)}, ${m.longitude.toFixed(3)}` : '-';
+          document.getElementById('m_height').innerText = m.height !== undefined ? `${m.height} m` : '-';
+          document.getElementById('m_vel').innerText = m.vel !== undefined ? `${m.vel} mm/yr` : (m.velocity !== undefined ? `${m.velocity} mm/yr` : '-');
+          document.getElementById('m_coherence').innerText = m.coherence ?? '-';
+          document.getElementById('m_inc').innerText = m.inc_angle !== undefined ? `${m.inc_angle}°` : '-';
+          document.getElementById('m_heading').innerText = m.heading !== undefined ? `${m.heading}°` : '-';
+          document.getElementById('m_ref').innerText = (m.ref_lat !== undefined && m.ref_lon !== undefined) ? `${m.ref_lat.toFixed(3)}, ${m.ref_lon.toFixed(3)}` : '-';
 
-            tsChart.data.labels = activeData.dates;
-            tsChart.data.datasets[0].data = activeData.displacement;
-            tsChart.update();
+          tsChart.data.labels = activeData.dates || [];
+          tsChart.data.datasets[0].data = activeData.displacement || [];
+          tsChart.update();
 
-            document.getElementById('dlBtn').disabled = false;
-          });
+          document.getElementById('dlBtn').disabled = false;
+        } catch (err) {
+          console.error("Error fetching point details:", err);
         }
-      }).addTo(map);
-    });
+      });
+    }
+  }).addTo(map);
+
+  // Dynamic Viewport Point Fetcher (Bounding Box)
+  async function loadVisiblePoints() {
+    if (isFetchingPoints) return;
+    isFetchingPoints = true;
+
+    const bounds = map.getBounds();
+    const minLat = bounds.getSouth();
+    const maxLat = bounds.getNorth();
+    const minLon = bounds.getWest();
+    const maxLon = bounds.getEast();
+
+    const url = `${API_BASE_URL}/geojson/insar_map_points.geojson?min_lat=${minLat}&max_lat=${maxLat}&min_lon=${minLon}&max_lon=${maxLon}`;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+      const data = await res.json();
+
+      pointLayer.clearLayers();
+      pointLayer.addData(data);
+    } catch (err) {
+      console.error("Error loading visible points:", err);
+    } finally {
+      isFetchingPoints = false;
+    }
+  }
+
+  // Fetch points whenever user finishes panning or zooming
+  map.on('moveend', loadVisiblePoints);
+
+  // Initial load for default view extent
+  loadVisiblePoints();
 
   // Download CSV
   function downloadCSV() {

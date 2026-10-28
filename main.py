@@ -1,10 +1,9 @@
 import os
-import json
-import duckdb
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from huggingface_hub import hf_hub_download
+import duckdb
 
 app = FastAPI()
 
@@ -20,7 +19,6 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 HF_REPO_ID = os.getenv("HF_REPO_ID", "rnus/jgms_sar4road_nat_200m_s1descending")
 
 def ensure_file_exists(filename: str):
-    """Downloads required dataset files from private Hugging Face repo if not cached locally."""
     if not os.path.exists(filename):
         print(f"Downloading {filename} from Hugging Face repo '{HF_REPO_ID}'...")
         hf_hub_download(
@@ -34,7 +32,6 @@ def ensure_file_exists(filename: str):
 
 @app.on_event("startup")
 def startup_event():
-    """Pre-downloads metadata and reference points during startup."""
     print("Pre-downloading essential datasets...")
     ensure_file_exists("metadata.duckdb")
     ensure_file_exists("reference_points.geojson")
@@ -50,53 +47,56 @@ def get_ref_points():
     return FileResponse("reference_points.geojson")
 
 @app.get("/geojson/insar_map_points.geojson")
-def get_insar_map_points():
+def get_insar_map_points(
+    min_lat: float = Query(None),
+    max_lat: float = Query(None),
+    min_lon: float = Query(None),
+    max_lon: float = Query(None),
+    limit: int = Query(8000)
+):
     """
-    Streams GeoJSON points in 5,000-row chunks directly to the browser.
-    Eliminates high memory usage and avoids both 500 and 502 errors.
+    Fetches only displacement points visible inside the current map extent (Bounding Box).
+    Prevents high memory usage on both Render backend and browser client.
     """
     ensure_file_exists("metadata.duckdb")
 
-    def generate_geojson_chunks():
-        yield '{"type":"FeatureCollection","features":['
+    con = duckdb.connect("metadata.duckdb", read_only=True)
 
-        con = duckdb.connect("metadata.duckdb", read_only=True)
-        cursor = con.cursor()
-        cursor.execute("SELECT global_id, latitude, longitude, vel FROM metadata")
+    if None not in (min_lat, max_lat, min_lon, max_lon):
+        query = """
+            SELECT global_id, latitude, longitude, vel 
+            FROM metadata 
+            WHERE latitude BETWEEN ? AND ? 
+              AND longitude BETWEEN ? AND ?
+            LIMIT ?
+        """
+        params = [min_lat, max_lat, min_lon, max_lon, limit]
+    else:
+        # Fallback if no bounds are passed
+        query = "SELECT global_id, latitude, longitude, vel FROM metadata LIMIT 3000"
+        params = [limit]
 
-        first_batch = True
-        batch_size = 5000
+    rows = con.execute(query, params).fetchall()
+    con.close()
 
-        while True:
-            rows = cursor.fetchmany(batch_size)
-            if not rows:
-                break
-
-            chunk_items = []
-            for r in rows:
-                gid = str(r[0])
-                lat = float(r[1]) if r[1] is not None else 0.0
-                lon = float(r[2]) if r[2] is not None else 0.0
-                vel = float(r[3]) if r[3] is not None else 0.0
-
-                item = (
-                    f'{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{lon},{lat}]}},'
-                    f'"properties":{{"global_id":"{gid}","velocity":{vel}}}}}'
-                )
-                chunk_items.append(item)
-
-            prefix = "" if first_batch else ","
-            yield prefix + ",".join(chunk_items)
-            first_batch = False
-
-        con.close()
-        yield ']}'
-
-    return StreamingResponse(generate_geojson_chunks(), media_type="application/json")
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [r[2], r[1]]
+            },
+            "properties": {
+                "global_id": str(r[0]),
+                "velocity": float(r[3]) if r[3] is not None else 0.0
+            }
+        }
+        for r in rows
+    ]
+    return {"type": "FeatureCollection", "features": features}
 
 @app.get("/point/{global_id}")
 def get_point_details(global_id: str):
-    """Fetches metadata and time-series displacement data for a clicked point."""
     ensure_file_exists("metadata.duckdb")
     
     meta_con = duckdb.connect("metadata.duckdb", read_only=True)
