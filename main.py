@@ -15,8 +15,7 @@ app.add_middleware(
 )
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-# Uses your Render environment variable, defaulting to your repo name if unset
-HF_REPO_ID = os.getenv("HF_REPO_ID", "rnus/jgms_sar4road_nr_200m_s1descending")
+HF_REPO_ID = os.getenv("HF_REPO_ID", "rnus/sar4road-data")
 
 def ensure_file_exists(filename: str):
     if not os.path.exists(filename):
@@ -32,7 +31,11 @@ def ensure_file_exists(filename: str):
 
 @app.on_event("startup")
 def startup_event():
+    print("Pre-downloading required datasets from Hugging Face...")
     ensure_file_exists("metadata.duckdb")
+    ensure_file_exists("reference_points.geojson")
+    ensure_file_exists("insar_map_points.geojson")
+    print("All backend files ready!")
 
 @app.get("/")
 def root():
