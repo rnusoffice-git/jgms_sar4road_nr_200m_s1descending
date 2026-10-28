@@ -7,7 +7,6 @@ import duckdb
 
 app = FastAPI()
 
-# Enable CORS for GitHub Pages frontend access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,7 +55,7 @@ def get_insar_map_points():
     Bypasses downloading/loading the 935 MB GeoJSON file to stay within Render's 512 MB RAM limit.
     """
     con = duckdb.connect("metadata.duckdb", read_only=True)
-    rows = con.execute("SELECT global_id, latitude, longitude, velocity FROM metadata").fetchall()
+    rows = con.execute("SELECT global_id, latitude, longitude, vel FROM metadata").fetchall()
     con.close()
 
     features = [
@@ -78,14 +77,12 @@ def get_insar_map_points():
 @app.get("/point/{global_id}")
 def get_point_details(global_id: str):
     """Fetches metadata and time-series displacement data for a clicked point."""
-    # 1. Fetch point metadata from local DuckDB
     meta_con = duckdb.connect("metadata.duckdb", read_only=True)
     meta_res = meta_con.execute("SELECT * FROM metadata WHERE global_id = ?", [global_id]).fetchone()
     meta_cols = [desc[0] for desc in meta_con.description] if meta_res else []
     metadata = dict(zip(meta_cols, meta_res)) if meta_res else {}
     meta_con.close()
 
-    # 2. Query time-series directly from remote Parquet on Hugging Face using DuckDB httpfs
     ts_con = duckdb.connect()
     ts_con.execute(f"""
         INSTALL httpfs; LOAD httpfs;
