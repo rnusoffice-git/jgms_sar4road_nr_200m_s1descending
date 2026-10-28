@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>sar4road_dashboard</title>
+
+  <!-- Leaflet & Chart.js -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; }
+
+    header { height: 45px; background: #1a252f; color: #ffffff; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; z-index: 1000; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    header h1 { font-size: 0.95rem; margin: 0; font-weight: 600; letter-spacing: 0.3px; }
+    
+    .info-btn { background: #2c3e50; border: 1px solid #455a64; color: #fff; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1rem; cursor: pointer; transition: background 0.2s; }
+    .info-btn:active { background: #007bff; }
+
+    #map { height: 45vh; width: 100%; position: relative; }
+
+    /* Search & GPS Bar */
+    .search-control {
+      position: absolute;
+      top: 10px;
+      left: 50px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 4px;
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+      display: flex;
+      gap: 4px;
+      backdrop-filter: blur(4px);
+    }
+    .search-input { border: 1px solid #ced4da; border-radius: 4px; padding: 6px 8px; font-size: 0.78rem; width: 140px; outline: none; }
+    .search-input:focus { border-color: #007bff; }
+    .search-btn, .gps-btn { background: #007bff; color: #ffffff; border: none; border-radius: 4px; padding: 6px 8px; font-size: 0.78rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .gps-btn { background: #28a745; font-size: 0.9rem; }
+
+    /* Floating Legend Overlay */
+    .legend-control { background: rgba(255, 255, 255, 0.92); padding: 8px 10px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.25); font-size: 0.75rem; backdrop-filter: blur(4px); }
+    .legend-title { font-weight: 700; margin-bottom: 5px; color: #212529; font-size: 0.78rem; border-bottom: 1px solid #dee2e6; padding-bottom: 3px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; cursor: pointer; user-select: none; transition: opacity 0.2s; }
+    .legend-item.disabled { opacity: 0.3; text-decoration: line-through; }
+    .legend-color { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 6px; border: 0.5px solid #000; flex-shrink: 0; }
+
+    #panel { height: calc(55vh - 45px); width: 100%; padding: 12px; background: #ffffff; overflow-y: auto; border-top: 2px solid #e0e0e0; }
+
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 0.8rem; background: #f8f9fa; padding: 8px; border-radius: 6px; margin-bottom: 8px; border: 1px solid #e9ecef; }
+    .meta-item { display: flex; justify-content: space-between; }
+    .meta-label { font-weight: 600; color: #495057; }
+    
+    .chart-container { height: 160px; width: 100%; position: relative; }
+    
+    .btn-csv { display: block; width: 100%; margin-top: 8px; padding: 10px; background: #28a745; color: white; text-align: center; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 0.85rem; }
+    .btn-csv:disabled { background: #6c757d; cursor: not-allowed; }
+
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #ffffff; z-index: 2000; overflow-y: auto; padding: 20px; animation: slideIn 0.25s ease-out; }
+    @keyframes slideIn { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+    .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f1f3f5; padding-bottom: 12px; margin-bottom: 16px; }
+    .modal-header h2 { font-size: 1.2rem; margin: 0; color: #1a252f; }
+    .close-btn { background: #e9ecef; border: none; font-size: 1.2rem; font-weight: bold; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; color: #495057; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>SAR4Road Displacement Dashboard</h1>
+    <button class="info-btn" id="openInfoBtn" aria-label="Methodology & Information">ℹ️</button>
+  </header>
+
+  <div id="map">
+    <div class="search-control" id="searchBox">
+      <input type="text" id="coordInput" class="search-input" placeholder="Lat, Lon (e.g. 39.01, 141.47)">
+      <button class="search-btn" onclick="searchCoordinates()">Go</button>
+      <button class="gps-btn" onclick="locateUser()" title="Find My Location">🎯</button>
+    </div>
+  </div>
+
+  <div id="panel">
+    <div class="meta-grid">
+      <div class="meta-item"><span class="meta-label">FID:</span> <span id="m_fid">-</span></div>
+      <div class="meta-item"><span class="meta-label">CODE:</span> <span id="m_code">-</span></div>
+      <div class="meta-item"><span class="meta-label">Lat, Lon:</span> <span id="m_coords">-</span></div>
+      <div class="meta-item"><span class="meta-label">Height:</span> <span id="m_height">-</span></div>
+      <div class="meta-item"><span class="meta-label">Velocity:</span> <span id="m_vel">-</span></div>
+      <div class="meta-item"><span class="meta-label">Coherence:</span> <span id="m_coherence">-</span></div>
+      <div class="meta-item"><span class="meta-label">Inc Angle:</span> <span id="m_inc">-</span></div>
+      <div class="meta-item"><span class="meta-label">Heading:</span> <span id="m_heading">-</span></div>
+      <div class="meta-item" style="grid-column: span 2"><span class="meta-label">Ref Point:</span> <span id="m_ref">-</span></div>
+    </div>
+
+    <div class="chart-container">
+      <canvas id="tsChart"></canvas>
+    </div>
+
+    <button id="dlBtn" class="btn-csv" disabled onclick="downloadCSV()">📥 Download CSV Data</button>
+  </div>
+
+  <div id="infoModal" class="modal-overlay">
+    <div class="modal-header">
+      <h2>Methodology & Info</h2>
+      <button class="close-btn" id="closeInfoBtn">&times;</button>
+    </div>
+    <div id="infoModalBody"><p style="color: #6c757d;">Loading description...</p></div>
+  </div>
+
+<script>
+  let activeData = null;
+  let pointLayer = null;
+  let searchMarker = null;
+  let userLocationMarker = null;
+  const API_BASE_URL = "http://localhost:8000"; // Replace with live Render URL after Phase 6
+
+  const activeCategories = { sub: true, mod_sub: true, mod_up: true, up: true };
+
+  // --- Dynamic description.txt Modal Fetch ---
+  const infoModal = document.getElementById('infoModal');
+  const infoModalBody = document.getElementById('infoModalBody');
+  let descriptionLoaded = false;
+
+  document.getElementById('openInfoBtn').addEventListener('click', async () => {
+    infoModal.style.display = 'block';
+    if (!descriptionLoaded) {
+      try {
+        const response = await fetch('description.txt');
+        if (!response.ok) throw new Error('File not found');
+        infoModalBody.innerHTML = await response.text();
+        descriptionLoaded = true;
+      } catch (err) {
+        infoModalBody.innerHTML = `<p style="color: #d9534f; font-weight: bold;">Unable to load description.txt.</p>`;
+      }
+    }
+  });
+  document.getElementById('closeInfoBtn').addEventListener('click', () => { infoModal.style.display = 'none'; });
+
+  // --- Initialize Map ---
+  const map = L.map('map', { preferCanvas: true }).setView([39.013, 141.473], 9);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+
+  L.DomEvent.disableClickPropagation(document.getElementById('searchBox'));
+  document.getElementById('coordInput').addEventListener('keypress', (e) => { if (e.key === 'Enter') searchCoordinates(); });
+
+  // Search Coordinates
+  function searchCoordinates() {
+    const input = document.getElementById('coordInput').value.trim();
+    if (!input) return;
+    const parts = input.split(/[\s,]+/);
+    if (parts.length < 2) return alert("Enter coordinates formatted as: Latitude, Longitude");
+    const lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+    if (isNaN(lat) || isNaN(lon)) return alert("Invalid Lat/Lon numbers.");
+
+    map.flyTo([lat, lon], 14, { duration: 1.2 });
+    if (searchMarker) searchMarker.setLatLng([lat, lon]);
+    else searchMarker = L.marker([lat, lon]).addTo(map);
+    searchMarker.bindPopup(`<b>Target</b><br>Lat: ${lat.toFixed(4)}<br>Lon: ${lon.toFixed(4)}`).openPopup();
+  }
+
+  // Find GPS Location
+  function locateUser() {
+    if (!navigator.geolocation) return alert("Geolocation not supported.");
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      map.flyTo([lat, lon], 14, { duration: 1.2 });
+      if (userLocationMarker) userLocationMarker.setLatLng([lat, lon]);
+      else userLocationMarker = L.circleMarker([lat, lon], { radius: 8, fillColor: '#28a745', color: '#fff', weight: 2, fillOpacity: 0.9 }).addTo(map);
+      userLocationMarker.bindPopup(`<b>Your Location</b><br>Lat: ${lat.toFixed(4)}<br>Lon: ${lon.toFixed(4)}`).openPopup();
+    }, () => alert("Location permission denied."));
+  }
+
+  // --- Initialize Chart.js ---
+  const ctx = document.getElementById('tsChart').getContext('2d');
+  let tsChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{ label: 'Displacement (mm)', data: [], borderColor: '#007bff', tension: 0.1, pointRadius: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+
+  function getCategoryKey(vel) {
+    if (vel < -15) return 'sub';
+    if (vel < 0) return 'mod_sub';
+    if (vel < 15) return 'mod_up';
+    return 'up';
+  }
+
+  function getColor(vel) {
+    return vel < -15 ? '#d73027' : vel < 0 ? '#fdae61' : vel < 15 ? '#ffffbf' : '#1a9850';
+  }
+
+  // --- Add Interactive Legend ---
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function () {
+    const div = L.DomUtil.create('div', 'legend-control');
+    div.innerHTML = `
+      <div class="legend-title">Velocity (mm/yr)</div>
+      <div class="legend-item" id="leg-sub" onclick="toggleLegendCategory('sub')"><span class="legend-color" style="background: #d73027;"></span> &lt; -15 (Subsidence)</div>
+      <div class="legend-item" id="leg-mod_sub" onclick="toggleLegendCategory('mod_sub')"><span class="legend-color" style="background: #fdae61;"></span> -15 to 0</div>
+      <div class="legend-item" id="leg-mod_up" onclick="toggleLegendCategory('mod_up')"><span class="legend-color" style="background: #ffffbf;"></span> 0 to 15</div>
+      <div class="legend-item" id="leg-up" onclick="toggleLegendCategory('up')"><span class="legend-color" style="background: #1a9850;"></span> &gt; 15 (Uplift)</div>
+      <div class="legend-item" style="cursor: default; opacity: 0.9; margin-top: 4px; border-top: 1px solid #e9ecef; padding-top: 3px;"><span class="legend-color" style="background: #0055ff;"></span> Reference Point (★)</div>
+    `;
+    L.DomEvent.disableClickPropagation(div);
+    return div;
+  };
+  legend.addTo(map);
+
+  function toggleLegendCategory(catKey) {
+    activeCategories[catKey] = !activeCategories[catKey];
+    const elem = document.getElementById(`leg-${catKey}`);
+    if (activeCategories[catKey]) elem.classList.remove('disabled');
+    else elem.classList.add('disabled');
+
+    if (pointLayer) {
+      pointLayer.setStyle(feature => {
+        const cat = getCategoryKey(feature.properties.VEL);
+        const isVisible = activeCategories[cat];
+        return { opacity: isVisible ? 1 : 0, fillOpacity: isVisible ? 0.85 : 0, radius: isVisible ? 3 : 0 };
+      });
+    }
+  }
+
+  // Load Reference Markers
+  fetch(`${API_BASE_URL}/geojson/reference_points.geojson`)
+    .then(res => res.json())
+    .then(data => {
+      L.geoJSON(data, {
+        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 7, fillColor: '#0055ff', color: '#fff', weight: 2, fillOpacity: 1 })
+      }).addTo(map);
+    });
+
+  // Load InSAR Points
+  fetch(`${API_BASE_URL}/geojson/insar_map_points.geojson`)
+    .then(res => res.json())
+    .then(data => {
+      pointLayer = L.geoJSON(data, {
+        pointToLayer: (feature, latlng) => L.circleMarker(latlng, { radius: 3, fillColor: getColor(feature.properties.VEL), color: '#000', weight: 0.1, fillOpacity: 0.85 }),
+        onEachFeature: (feature, layer) => {
+          layer.on('click', async () => {
+            const cat = getCategoryKey(feature.properties.VEL);
+            if (!activeCategories[cat]) return;
+
+            const gid = feature.properties.global_id;
+            const res = await fetch(`${API_BASE_URL}/point/${gid}`);
+            activeData = await res.json();
+            const m = activeData.metadata;
+
+            document.getElementById('m_fid').innerText = m.fid;
+            document.getElementById('m_code').innerText = m.code;
+            document.getElementById('m_coords').innerText = `${m.latitude.toFixed(3)}, ${m.longitude.toFixed(3)}`;
+            document.getElementById('m_height').innerText = `${m.height} m`;
+            document.getElementById('m_vel').innerText = `${m.vel} mm/yr`;
+            document.getElementById('m_coherence').innerText = m.coherence;
+            document.getElementById('m_inc').innerText = `${m.inc_angle}°`;
+            document.getElementById('m_heading').innerText = `${m.heading}°`;
+            document.getElementById('m_ref').innerText = `${m.ref_lat.toFixed(3)}, ${m.ref_lon.toFixed(3)}`;
+
+            tsChart.data.labels = activeData.dates;
+            tsChart.data.datasets[0].data = activeData.displacement;
+            tsChart.update();
+
+            document.getElementById('dlBtn').disabled = false;
+          });
+        }
+      }).addTo(map);
+    });
+
+  // Download CSV
+  function downloadCSV() {
+    if (!activeData) return;
+    const m = activeData.metadata;
+    let csv = "data:text/csv;charset=utf-8,";
+    csv += `# METADATA INFORMATION\nFID,${m.fid}\nCODE,${m.code}\nLatitude,${m.latitude}\nLongitude,${m.longitude}\nHeight (m),${m.height}\nVelocity (mm/yr),${m.vel}\nCoherence,${m.coherence}\nIncidence Angle (deg),${m.inc_angle}\nAzimuth Angle (deg),${m.az_angle}\nHeading (deg),${m.heading}\nReference Lat,${m.ref_lat}\nReference Lon,${m.ref_lon}\nFile Name,${m.file_name}\n\n`;
+    csv += `# TIME SERIES DATA\nDate,Displacement_mm\n`;
+    activeData.dates.forEach((d, i) => { csv += `${d},${activeData.displacement[i]}\n`; });
+
+    const link = document.createElement("a");
+    link.href = encodeURI(csv);
+    link.download = `InSAR_${m.code}_FID_${m.fid}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+</script>
+</body>
+</html>

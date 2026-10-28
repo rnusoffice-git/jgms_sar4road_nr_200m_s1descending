@@ -1,0 +1,7 @@
+data/
+*.gpkg
+timeseries.parquet
+metadata.duckdb
+*.geojson
+temp_processing.duckdb
+__pycache__/

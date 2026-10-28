@@ -1,0 +1,34 @@
+<h3>1. Project Overview & Objectives</h3>
+<p>
+  The SAR4Road dashboard provides interactive InSAR time-series analysis for road and infrastructure displacement monitoring across national roads in Japan.
+</p>
+
+<h3>2. InSAR Processing Methodology</h3>
+<p>
+  The ground subsidence information processed by a remote sensing technique called Interferometric Synthetic Aperture Radar (InSAR). Sentinel-1 SAR data were processed by using the open-source software packages ISCE and MintPy. Tropospheric delay was corrected by the APS model called ERA5 (the fifth generation of European Center for Medium-Range Weather Forecasts Reanalysis). SAR images are multi-looked to achieve a spatial resolution of around 30x30m in azimuth and range direction. SAR images from Descending tracks are used in the analysis.
+</p>
+<p>
+  This represents a preliminary result, in which the ground displacement values are expressed as relative measurements with respect to a stable reference point within each study area, displayed as blue stars (★) on the map interface. Although the accuracy of the displacement data has been refined using appropriate tropospheric corrections, inter-area displacement adjustments have not yet been applied and displacement has not been calibrated with GNSS yet. These adjustments are planned for future implementation.
+</p>
+
+<h3>3. Dashboard Features</h3>
+<p>
+  Selecting a point on the map allows users to view time-series data and ground displacement velocity in <strong>'mm/year'</strong> unit.
+</p>
+<p>
+  The displacement shown in red (negative value) indicates that the ground moved away from the satellite along the LOS direction. In contrast, the blue (positive value) indicates that the ground moved closer to the satellite.
+</p>
+<ul>
+  <li><strong>Data Export:</strong> While viewing the time-series plot, users can export the data in .csv or .json format. Each layer file includes a legend displayed below it, serving as a visual guide to the color scheme.</li>
+  <li><strong>Coordinate Search:</strong> Enter "Lat, Lon" or tap 🎯 for GPS location.</li>
+</ul>
+
+<hr style="border: 0; border-top: 1px solid #dee2e6; margin: 15px 0;">
+
+<p><strong>Note:</strong> This dashboard is regularly maintained, with the most recent update completed in October 2026.</p>
+
+<p><strong>Contact information:</strong> For inquiries on InSAR analysis, please contact <a href="https://wtlab.iis.u-tokyo.ac.jp/en/access_e.html" target="_blank" rel="noopener">W.Takeuchi Lab ｜ Institute of Industrial Science, The University of Tokyo</a>.</p>
+
+<p style="font-size: 0.85em; color: #6c757d; margin-top: 15px;">
+  <strong>Disclaimer:</strong> The latest ground subsidence data, derived from InSAR time-series analysis, reveals areas of ground instability across national roads throughout Japan. While the update interval and duration may differ for each area, this application consistently displays the most recent information made available by the data provider: <a href="https://wtlab.iis.u-tokyo.ac.jp/en/access_e.html" target="_blank" rel="noopener">https://wtlab.iis.u-tokyo.ac.jp/en/access_e.html</a>.
+</p>
