@@ -33,52 +33,15 @@ def ensure_file_exists(filename: str):
 
 @app.on_event("startup")
 def startup_event():
-    """Pre-downloads essential datasets and prints schemas to logs for verification."""
     print("Pre-downloading essential datasets...")
     ensure_file_exists("metadata.duckdb")
     ensure_file_exists("reference_points.geojson")
     ensure_file_exists("timeseries.parquet")
-    
-    # Log metadata and parquet column schemas
-    try:
-        con = duckdb.connect("metadata.duckdb", read_only=True)
-        print("metadata.duckdb schema:", con.execute("DESCRIBE metadata").fetchall())
-        con.close()
-
-        ts_con = duckdb.connect()
-        print("timeseries.parquet schema:", ts_con.execute("DESCRIBE SELECT * FROM read_parquet('timeseries.parquet')").fetchall())
-        ts_con.close()
-    except Exception as e:
-        print("Startup schema inspection warning:", e)
-
     print("Backend ready!")
 
 @app.get("/")
 def root():
     return {"status": "sar4road_dashboard Private Hugging Face API Online"}
-
-@app.get("/debug/schema")
-def debug_schema():
-    """Diagnostic endpoint to inspect table columns and sample rows."""
-    ensure_file_exists("metadata.duckdb")
-    ensure_file_exists("timeseries.parquet")
-    
-    m_con = duckdb.connect("metadata.duckdb", read_only=True)
-    m_cols = [r[0] for r in m_con.execute("DESCRIBE metadata").fetchall()]
-    m_sample = m_con.execute("SELECT * FROM metadata LIMIT 1").fetchone()
-    m_con.close()
-
-    ts_con = duckdb.connect()
-    ts_cols = [r[0] for r in ts_con.execute("DESCRIBE SELECT * FROM read_parquet('timeseries.parquet')").fetchall()]
-    ts_sample = ts_con.execute("SELECT * FROM read_parquet('timeseries.parquet') LIMIT 1").fetchone()
-    ts_con.close()
-
-    return {
-        "metadata_columns": m_cols,
-        "metadata_sample": m_sample,
-        "timeseries_columns": ts_cols,
-        "timeseries_sample": ts_sample
-    }
 
 @app.get("/geojson/reference_points.geojson")
 def get_ref_points():
@@ -96,17 +59,26 @@ def get_insar_map_points(
     ensure_file_exists("metadata.duckdb")
     con = duckdb.connect("metadata.duckdb", read_only=True)
 
+    cols_info = con.execute("DESCRIBE metadata").fetchall()
+    cols = [r[0] for r in cols_info]
+    cols_lower = [c.lower() for c in cols]
+
+    gid_col = next((c for c, cl in zip(cols, cols_lower) if cl in ['global_id', 'fid', 'code', 'id']), cols[0])
+    lat_col = next((c for c, cl in zip(cols, cols_lower) if 'lat' in cl), 'latitude')
+    lon_col = next((c for c, cl in zip(cols, cols_lower) if 'lon' in cl or 'lng' in cl), 'longitude')
+    vel_col = next((c for c, cl in zip(cols, cols_lower) if 'vel' in cl or 'speed' in cl), 'vel')
+
     if None not in (min_lat, max_lat, min_lon, max_lon):
-        query = """
-            SELECT global_id, latitude, longitude, vel 
+        query = f"""
+            SELECT {gid_col}, {lat_col}, {lon_col}, {vel_col}
             FROM metadata 
-            WHERE latitude BETWEEN ? AND ? 
-              AND longitude BETWEEN ? AND ?
+            WHERE {lat_col} BETWEEN ? AND ? 
+              AND {lon_col} BETWEEN ? AND ?
             LIMIT ?
         """
         params = [min_lat, max_lat, min_lon, max_lon, limit]
     else:
-        query = "SELECT global_id, latitude, longitude, vel FROM metadata LIMIT 3000"
+        query = f"SELECT {gid_col}, {lat_col}, {lon_col}, {vel_col} FROM metadata LIMIT 3000"
         params = [limit]
 
     rows = con.execute(query, params).fetchall()
@@ -117,70 +89,100 @@ def get_insar_map_points(
             "type": "Feature",
             "geometry": {
                 "type": "Point",
-                "coordinates": [r[2], r[1]]
+                "coordinates": [float(r[2]), float(r[1])]
             },
             "properties": {
                 "global_id": str(r[0]),
                 "velocity": float(r[3]) if r[3] is not None else 0.0
             }
         }
-        for r in rows
+        for r in rows if r[1] is not None and r[2] is not None
     ]
     return {"type": "FeatureCollection", "features": features}
 
 @app.get("/point/{global_id}")
 def get_point_details(global_id: str):
     """
-    Fetches metadata and time-series displacement using flexible type matching
-    to resolve integer vs float vs string global_id discrepancies.
+    Fetches point metadata and time-series by cross-matching global_id, fid, 
+    and code dynamically across metadata.duckdb and timeseries.parquet.
     """
     ensure_file_exists("metadata.duckdb")
     ensure_file_exists("timeseries.parquet")
 
-    clean_gid = str(global_id).strip().rstrip('.0')
+    target_id = str(global_id).strip()
+    clean_id = target_id.rstrip('.0')
+
     metadata = {}
     dates = []
     displacement = []
 
-    # 1. Fetch Metadata
+    # 1. Dynamic Metadata Match (Checks global_id, fid, code, and id columns)
     try:
-        meta_con = duckdb.connect("metadata.duckdb", read_only=True)
-        meta_res = meta_con.execute("""
-            SELECT * FROM metadata 
-            WHERE REPLACE(CAST(global_id AS VARCHAR), '.0', '') = ?
-        """, [clean_gid]).fetchone()
+        m_con = duckdb.connect("metadata.duckdb", read_only=True)
+        m_cols_info = m_con.execute("DESCRIBE metadata").fetchall()
+        m_cols = [r[0] for r in m_cols_info]
+        m_cols_lower = [c.lower() for c in m_cols]
 
-        if meta_res:
-            cols = [desc[0].lower() for desc in meta_con.description]
-            metadata = dict(zip(cols, meta_res))
-        meta_con.close()
+        id_cols = [c for c, cl in zip(m_cols, m_cols_lower) if cl in ['global_id', 'fid', 'code', 'id', 'point_id']]
+        
+        if id_cols:
+            where_clauses = [f"CAST({col} AS VARCHAR) = ?" for col in id_cols]
+            sql = f"SELECT * FROM metadata WHERE {' OR '.join(where_clauses)} LIMIT 1"
+            
+            row = m_con.execute(sql, [target_id] * len(id_cols)).fetchone()
+            if not row and clean_id != target_id:
+                row = m_con.execute(sql, [clean_id] * len(id_cols)).fetchone()
+
+            if row:
+                metadata = dict(zip(m_cols_lower, row))
+        m_con.close()
     except Exception as e:
-        print(f"Error fetching metadata for global_id {global_id}: {e}")
+        print(f"Metadata query error: {e}")
 
-    # 2. Fetch Time Series Data from Parquet
+    # 2. Dynamic Time Series Match in Parquet
     try:
         ts_con = duckdb.connect()
-        ts_res = ts_con.execute("""
-            SELECT CAST(date AS VARCHAR) as date_str, displacement 
-            FROM read_parquet('timeseries.parquet') 
-            WHERE REPLACE(CAST(global_id AS VARCHAR), '.0', '') = ?
-            ORDER BY date ASC
-        """, [clean_gid]).fetchall()
+        ts_cols_info = ts_con.execute("DESCRIBE SELECT * FROM read_parquet('timeseries.parquet')").fetchall()
+        ts_cols = [r[0] for r in ts_cols_info]
+        ts_cols_lower = [c.lower() for c in ts_cols]
 
-        # Fallback query using 'code' column if global_id lookup returns 0 rows
-        if not ts_res and metadata.get('code'):
-            ts_res = ts_con.execute("""
-                SELECT CAST(date AS VARCHAR) as date_str, displacement 
-                FROM read_parquet('timeseries.parquet') 
-                WHERE CAST(code AS VARCHAR) = ?
-                ORDER BY date ASC
-            """, [str(metadata['code'])]).fetchall()
+        ts_id_cols = [c for c, cl in zip(ts_cols, ts_cols_lower) if cl in ['global_id', 'fid', 'code', 'id', 'point_id']]
+        date_col = next((c for c, cl in zip(ts_cols, ts_cols_lower) if 'date' in cl or 'time' in cl or 'epoch' in cl), None)
+        disp_col = next((c for c, cl in zip(ts_cols, ts_cols_lower) if 'disp' in cl or 'val' in cl or 'd' == cl), None)
 
-        dates = [row[0] for row in ts_res]
-        displacement = [float(row[1]) if row[1] is not None else 0.0 for row in ts_res]
+        # Build candidate search list (request ID + metadata FID/CODE)
+        search_vals = list(dict.fromkeys([
+            target_id, 
+            clean_id, 
+            str(metadata.get('global_id', '')), 
+            str(metadata.get('fid', '')), 
+            str(metadata.get('code', ''))
+        ]))
+        search_vals = [v for v in search_vals if v]
+
+        if ts_id_cols and date_col and disp_col:
+            ts_rows = []
+            for id_col in ts_id_cols:
+                for val in search_vals:
+                    query = f"""
+                        SELECT CAST({date_col} AS VARCHAR) as d, CAST({disp_col} AS DOUBLE) as val
+                        FROM read_parquet('timeseries.parquet')
+                        WHERE CAST({id_col} AS VARCHAR) = ?
+                        ORDER BY {date_col} ASC
+                    """
+                    res = ts_con.execute(query, [str(val)]).fetchall()
+                    if res:
+                        ts_rows = res
+                        break
+                if ts_rows:
+                    break
+
+            dates = [r[0] for r in ts_rows]
+            displacement = [float(r[1]) if r[1] is not None else 0.0 for r in ts_rows]
+
         ts_con.close()
     except Exception as e:
-        print(f"Error fetching time-series for global_id {global_id}: {e}")
+        print(f"Time series query error: {e}")
 
     return {
         "metadata": metadata,
