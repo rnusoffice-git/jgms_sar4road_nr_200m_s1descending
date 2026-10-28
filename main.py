@@ -1,8 +1,8 @@
 import os
-import urllib.request
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from huggingface_hub import hf_hub_download
 import duckdb
 
 app = FastAPI()
@@ -15,16 +15,19 @@ app.add_middleware(
 )
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-HF_USERNAME = os.getenv("HF_USERNAME")
-HF_DATASET_URL = f"https://huggingface.co/datasets/{HF_USERNAME}/sar4road-data/resolve/main"
+# Uses your Render environment variable, defaulting to your repo name if unset
+HF_REPO_ID = os.getenv("HF_REPO_ID", "rnus/jgms_sar4road_nr_200m_s1descending")
 
-def ensure_file_exists(filename):
+def ensure_file_exists(filename: str):
     if not os.path.exists(filename):
-        print(f"Downloading {filename} from Hugging Face...")
-        url = f"{HF_DATASET_URL}/{filename}"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {HF_TOKEN}"})
-        with urllib.request.urlopen(req) as response, open(filename, "wb") as out_file:
-            out_file.write(response.read())
+        print(f"Downloading {filename} from Hugging Face repo '{HF_REPO_ID}'...")
+        hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=filename,
+            repo_type="dataset",
+            token=HF_TOKEN,
+            local_dir="."
+        )
         print(f"{filename} download complete!")
 
 @app.on_event("startup")
@@ -54,7 +57,7 @@ def get_point_details(global_id: str):
         SET http_headers = map(['Authorization'], ['Bearer {HF_TOKEN}']);
     """)
 
-    parquet_url = f"{HF_DATASET_URL}/timeseries.parquet"
+    parquet_url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/timeseries.parquet"
     ts_res = ts_con.execute(f"""
         SELECT strftime(date, '%Y-%m-%d') as date, displacement 
         FROM read_parquet('{parquet_url}') 
